@@ -1,0 +1,53 @@
+{
+  "name": "@animalabs/screen-mcpl",
+  "version": "0.1.0",
+  "description": "MCPL server that watches macOS screen regions/windows via Peekaboo and pushes change events to the agent.",
+  "type": "module",
+  "main": "./dist/src/index.js",
+  "bin": {
+    "screen-mcpl": "./dist/src/index.js"
+  },
+  "scripts": {
+    "build": "tsc && (swiftc -O -o dist/framebox tools/framebox.swift 2>/dev/null || echo \"framebox not built (swiftc missing) \u2014 falling back to sips, no change boxes\")",
+    "clean": "rm -rf dist",
+    "test": "npm run build && node --import tsx --test test/*.test.ts"
+  },
+  "dependencies": {
+    "@animalabs/mcpl-core": "^0.3.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.7.0",
+    "typescript": "^5.5.0",
+    "@types/node": "^20.0.0"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/anima-research/screen-mcpl.git"
+  },
+  "homepage": "https://github.com/anima-research/screen-mcpl#readme",
+  "bugs": {
+    "url": "https://github.com/anima-research/screen-mcpl/issues"
+  },
+  "files": [
+    "dist/src",
+    "dist/framebox",
+    "tools",
+    "README.md",
+    "LICENSE"
+  ],
+  "os": [
+    "darwin"
+  ],
+  "keywords": [
+    "mcpl",
+    "mcp",
+    "macos",
+    "screen",
+    "peekaboo",
+    "agent"
+  ]
+}
