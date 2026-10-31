@@ -73,7 +73,7 @@ export interface FeatureSetDeclaration05 {
   tagOntology?: TagOntology;
 }
 
-/** RFC-001 §5.1 descriptor (the fields this server uses). `rationale` is the proposed §5.1 addition: what the rule is for, and what declining it costs. */
+/** The RFC-001 §5.1 descriptor shape, a superset of what this server declares (it leaves out §5.1's `implies`, `stability` and `keyed`). `rationale` is the proposed §5.1 addition: what the rule is for, and what declining it costs. */
 export interface TagOntology {
   coreTags?: string[];
   tags?: Record<string, { desc: string; facet?: string; suggestedTreatment?: TreatmentBehavior; rationale?: string }>;
