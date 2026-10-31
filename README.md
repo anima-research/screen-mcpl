@@ -74,7 +74,10 @@ Bridge entry (`.mcpl-bridge.json`):
 }
 ```
 
-Push tags: `screen:change`, `screen:watch-state`, `screen:watch:<id>`.
+Push tags: `screen:change`, `screen:watch-state`, `screen:watch:<id>`. The feature set declares
+them in an RFC-001 `tagOntology` that suggests waking immediately on both kinds of push: the
+watch already merges each burst, and is paced per watch with `screen_watch_set`. A host offers
+the suggestions to its agent or operator and applies them only on acceptance.
 
 ## Privacy
 
@@ -84,5 +87,5 @@ screen; frames are kept only locally and pruned; nothing leaves the Mac except t
 ## Test
 
 ```bash
-npm test    # coalescing, segment chaining, state classification (fake capture)
+npm test    # coalescing, segment chaining, state classification (fake capture), the declared tag ontology
 ```

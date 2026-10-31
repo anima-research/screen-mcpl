@@ -69,7 +69,18 @@ export interface FeatureSetDeclaration05 {
   uses: CapabilityPath[];
   /** §8.1 — rollback support. This server is stateless, so `false`. */
   rollback?: boolean;
+  /** RFC-001 §5: the tags this feature set's events carry, and how it suggests treating them (advisory; a host applies a suggestion only on acceptance, §5.2). */
+  tagOntology?: TagOntology;
 }
+
+/** The RFC-001 §5.1 descriptor shape, a superset of what this server declares (it leaves out §5.1's `implies`, `stability` and `keyed`). `rationale` is the proposed §5.1 addition: what the rule is for, and what declining it costs. */
+export interface TagOntology {
+  coreTags?: string[];
+  tags?: Record<string, { desc: string; facet?: string; suggestedTreatment?: TreatmentBehavior; rationale?: string }>;
+  suggestedTreatment?: Array<{ tagsAny?: string[]; tagsAll?: string[]; tagsNone?: string[]; behavior: TreatmentBehavior; rationale?: string }>;
+  open?: boolean;
+}
+export type TreatmentBehavior = 'immediate' | 'mute' | { debounce: number } | { throttle: { perMs: number } };
 
 /** The name-keyed view the derivation works over, independent of wire shape. */
 export type FeatureSetMap = Record<string, FeatureSetDeclaration05>;
