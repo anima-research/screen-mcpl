@@ -55,10 +55,27 @@ function saveConfig(c: Config): void {
   catch (e) { log('config write failed:', (e as Error).message); }
 }
 
+/** RFC-001 §3: what a push carries, besides screen:watch:<id> naming its watch. */
+const TAG_CHANGE = 'screen:change';
+const TAG_WATCH_STATE = 'screen:watch-state';
+
 const featureSetDecl: FeatureSetDeclaration05 = {
   description: 'Watch windows, apps, screens or regions of the Mac display and wake the agent when they change; on-demand screenshots and UI maps.',
   uses: ['tools', 'pushEvents'],
   rollback: false,
+  // RFC-001 §5: what the pushes carry, and how this server suggests treating them. Suggestions
+  // only; the host applies them if its agent or operator accepts (§5.2).
+  tagOntology: {
+    tags: {
+      [TAG_CHANGE]: { desc: `Something you are watching changed. One push per burst of change (the watch's coalesceSeconds of quiet closes a burst, default ${DEFAULTS.coalesceSeconds} s; continuous change still pushes every maxHoldSeconds, default ${DEFAULTS.maxHoldSeconds} s), with the last frame, the changed areas boxed, and the note you gave. Also tagged screen:watch:<id>.`, facet: 'content' },
+      [TAG_WATCH_STATE]: { desc: 'A watch you set stopped seeing: its window or app went away (it resumes on its own when it is back), or capture is blocked, usually by a missing permission. Also tagged screen:watch:<id>.', facet: 'lifecycle' },
+    },
+    suggestedTreatment: [
+      { tagsAny: [TAG_WATCH_STATE], behavior: 'immediate', rationale: 'Your eyes on something just closed. Until the watch recovers, nothing it covers can wake you, and a blocked watch usually needs someone to grant a permission.' },
+      { tagsAny: [TAG_CHANGE], behavior: 'immediate', rationale: `You started this watch to be woken when it changes, and the server already merges each burst into one push. To be woken less often, slow the watch with screen_watch_set (coalesceSeconds, maxHoldSeconds, minIntervalSeconds) or stop it with screen_unwatch; a debounce here would stack a second quiet period on the watch's own, which a busy watch could keep pushing back. Without this, changes wait unread until something else wakes you.` },
+    ],
+    open: true,
+  },
 };
 const declaredFeatureSets: FeatureSetMap = { [FS_NAME]: featureSetDecl };
 const featureSets: FeatureSetWireEntry[] = [{ name: FS_NAME, ...featureSetDecl }];
@@ -267,7 +284,7 @@ class ScreenServer {
       catch (e) { log('inline image failed:', (e as Error).message); }
     }
     return this.emitPush(content, { server: 'screen-mcpl', watch: spec.id, label: spec.label, target: describeTarget(spec.target), changes: n },
-      ['screen:change', `screen:watch:${spec.id}`], `change_${spec.id}_${burst.pushNumber}`);
+      [TAG_CHANGE, `screen:watch:${spec.id}`], `change_${spec.id}_${burst.pushNumber}`);
   }
 
   private onStateChanged(spec: WatchSpec, rt: WatchRuntime, prev: WatchState): void {
@@ -281,7 +298,7 @@ class ScreenServer {
       ? `[screen] ${spec.label} (watch "${spec.id}"): ${rt.reason}. I'll keep trying and resume automatically.`
       : `[screen] ${spec.label} (watch "${spec.id}") is blocked: ${rt.reason}. Retrying periodically.`;
     this.emitPush([{ type: 'text', text }], { server: 'screen-mcpl', watch: spec.id, label: spec.label, state: rt.state },
-      ['screen:watch-state', `screen:watch:${spec.id}`], `state_${spec.id}_${rt.state}_${Date.now()}`);
+      [TAG_WATCH_STATE, `screen:watch:${spec.id}`], `state_${spec.id}_${rt.state}_${Date.now()}`);
   }
 
   private emitPush(content: ContentBlock[], origin: Record<string, unknown>, tags: string[], eventId: string): boolean {
