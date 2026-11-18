@@ -79,6 +79,52 @@ them in an RFC-001 `tagOntology` that suggests waking immediately on both kinds 
 watch already merges each burst, and is paced per watch with `screen_watch_set`. A host offers
 the suggestions to its agent or operator and applies them only on acceptance.
 
+## Input (optional)
+
+Set `SCREEN_MCPL_INPUT=1` and three more tools are listed. Without it the tool list is unchanged.
+
+| tool | what |
+|---|---|
+| `screen_click` | click at `x`,`y` (pixels of the last `screen_look` image) |
+| `screen_type` | type `text` into whatever has keyboard focus in that window |
+| `screen_press` | press `keys`: `"return"`, `"tab"`, `"pagedown"`, several separated by spaces |
+
+They act on the app window the agent last captured with `screen_look` (a region or whole-screen
+look selects no window). Everything is delivered through Peekaboo's background route: the pointer
+does not move, the window does not come forward and it may be completely covered by other windows.
+Results are text; the agent looks again to see what changed.
+
+What the background route cannot do:
+
+- A click presses the accessibility element under the point. A point with no pressable element
+  (blank page area, a custom-drawn widget, a canvas) fails with an error that says so.
+- App and menu shortcuts (`cmd+r`, `cmd+a`, `cmd+c` …) arrive in a web page as key events, but
+  the app does not act on them. Use the toolbar buttons, and the page keys for scrolling.
+- There is no wheel scrolling in Chrome; `pagedown` / `pageup` / `space` / arrow keys scroll.
+
+Chrome has to be started with a few flags to be driven this way, so give the agent its own instance:
+
+```bash
+open -g -n -a "Google Chrome" --args --user-data-dir=/path/to/agent-profile \
+  --force-renderer-accessibility \
+  --disable-backgrounding-occluded-windows --disable-renderer-backgrounding \
+  --disable-features=MacWebContentsOcclusion
+```
+
+`--force-renderer-accessibility` puts page content into the accessibility tree (without it every
+click on a page fails). The other flags keep a covered window painting; without them clicks still
+land but screenshots of a covered window go stale. With two Chrome instances running, name the
+agent's one by process id: `screen_look {app:"PID:12345"}` (`screen_apps` lists pids). Launching
+the instance brings it to the front once, despite `-g`.
+
+Set `PEEKABOO_BRIDGE_SOCKET` to the daemon socket that holds the permissions (normally
+`~/Library/Application Support/Peekaboo/daemon.sock`). Peekaboo can start a second, ungranted
+daemon on its own; unpinned calls then reach that one and fail with a permission error.
+**Event Synthesizing** must be granted alongside Accessibility.
+
+`screen_look {elements:true}` fails on Chrome windows with Peekaboo 4.9.0 ("inconsistent response
+evidence: window-context window title"); plain looks, which the input tools use, are unaffected.
+
 ## Privacy
 
 This streams screen content to whoever the host is. Prefer app/window/region scope over whole

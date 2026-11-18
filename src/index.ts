@@ -24,6 +24,7 @@ import type {
 } from './mcpl05.js';
 import { daemonStatus, describeTarget, ensureDaemon, errorText, pb, permissions, targetArgs, type Target } from './peekaboo.js';
 import { base64Of, renderFrame } from './image.js';
+import { INPUT_ENABLED, inputToolDefinitions, pngSize, viewScale, windowPoint, withoutCliAdvice, type View } from './input.js';
 import { WatchManager, type Burst, type ImageMode, type WatchRuntime, type WatchSpec, type WatchState } from './watch.js';
 
 const HOME = process.env.SCREEN_MCPL_HOME ?? join(homedir(), '.screen-mcpl');
@@ -122,6 +123,7 @@ const toolDefinitions = [
   { name: 'screen_apps', description: 'List running apps; with app given, list that app\'s windows (titles, ids, bounds) so you can target a watch precisely.',
     inputSchema: { type: 'object' as const, properties: { app: { type: 'string' } } } },
 ];
+const listedTools = INPUT_ENABLED ? [...toolDefinitions, ...inputToolDefinitions] : toolDefinitions;
 
 interface ReqMsg { id: JsonRpcId; method: string; params?: unknown }
 interface NotifMsg { method: string; params?: unknown }
@@ -154,6 +156,8 @@ class ScreenServer {
   private grant: Grant = EMPTY_GRANT;
   private policyReady = false;
   private readonly watches: WatchManager;
+  /** The window the input tools act on: the last app window screen_look captured. */
+  private view: View | null = null;
 
   constructor() {
     this.watches = new WatchManager(CAPTURES, {
@@ -209,7 +213,7 @@ class ScreenServer {
     const params = (req.params ?? {}) as Record<string, unknown>;
     try {
       switch (req.method) {
-        case 'tools/list': conn.sendResponse(req.id, { tools: toolDefinitions }); break;
+        case 'tools/list': conn.sendResponse(req.id, { tools: listedTools }); break;
         case 'tools/call': conn.sendResponse(req.id, await this.handleToolCall(params.name as string, (params.arguments ?? {}) as Record<string, unknown>)); break;
         case 'ping': conn.sendResponse(req.id, {}); break;
         case method.FEATURE_SETS_UPDATE: this.handleFeatureSetsUpdateRequest(req); break;
@@ -327,8 +331,45 @@ class ScreenServer {
       case 'screen_watch_set': return this.toolWatchSet(args);
       case 'screen_look': return this.toolLook(args);
       case 'screen_apps': return this.toolApps(args);
-      default: return this.text(`Unknown tool: ${name}`, true);
     }
+    if (INPUT_ENABLED) {
+      switch (name) {
+        case 'screen_click':
+          if (typeof args.x !== 'number' || typeof args.y !== 'number') return this.text('x and y are required (pixels in the last screen_look image)', true);
+          return this.act(v => ['click', '--at', windowPoint(v, args.x as number, args.y as number)], v => `Clicked at ${args.x},${args.y} in "${v.title}".`);
+        case 'screen_type':
+          if (typeof args.text !== 'string' || !args.text) return this.text('text is required', true);
+          // "--text=" form: text that starts with a dash would otherwise be read as a flag.
+          return this.act(() => ['type', `--text=${args.text as string}`, '--accept-dispatched'], v => `Typed ${(args.text as string).length} characters into "${v.title}".`);
+        case 'screen_press': {
+          const keys = (str(args.keys) ?? '').split(/\s+/).filter(Boolean);
+          if (keys.length === 0) return this.text('keys is required, e.g. "return" or "tab tab"', true);
+          // One key per snapshot: a page that reacts to the first key makes the snapshot stale for the next.
+          let last = this.text('');
+          for (const [i, key] of keys.entries()) {
+            last = await this.act(() => ['press', key], v => `Pressed ${keys.join(' ')} in "${v.title}".`);
+            if (last.isError && i > 0) return this.text(`Pressed ${keys.slice(0, i).join(' ')}, then ${key} failed: ${(last.content[0] as { text: string }).text}`, true);
+            if (last.isError) return last;
+          }
+          return last;
+        }
+      }
+    }
+    return this.text(`Unknown tool: ${name}`, true);
+  }
+
+  /** Run one background input command against the viewed window. Peekaboo wants a
+   *  fresh snapshot of the exact window for each one, so take it here. */
+  private async act(command: (v: View) => string[], done: (v: View) => string): Promise<ToolResult> {
+    const v = this.view;
+    if (!v) return this.text('No window to act on yet. Capture an app window first: screen_look {app:"…"} (screen_apps lists apps and their windows).', true);
+    const dir = join(CAPTURES, '_look');
+    mkdirSync(dir, { recursive: true });
+    const snap = await pb<{ snapshot_id?: string }>(['see', '--window-id', String(v.windowId), '--no-elements', '--path', join(dir, 'act.png')]);
+    if (!snap.success || !snap.data?.snapshot_id) return this.text(`Could not reach the window "${v.title}" (id ${v.windowId}): ${errorText(snap)}. Look at it again with screen_look.`, true);
+    const r = await pb([...command(v), '--snapshot', snap.data.snapshot_id, '--window-id', String(v.windowId)]);
+    if (!r.success) return this.text(withoutCliAdvice(r.error?.message ?? errorText(r)), true);
+    return this.text(done(v));
   }
 
   private persist(): void {
@@ -425,6 +466,16 @@ class ScreenServer {
     try { jpg = (await renderFrame(d.screenshot_raw ?? png, png.replace(/\.png$/, '.jpg'), maxPx)).path; } catch (e) { log('look jpeg failed:', (e as Error).message); }
     const head = [`${describeTarget(target)}${d.application_name ? ` — ${d.application_name}` : ''}${d.window_title ? `: "${d.window_title}"` : ''} at ${fmtTime(Date.now())}.`];
     head.push(`Image: ${jpg ?? d.screenshot_raw ?? png}`);
+    if (INPUT_ENABLED) {
+      // Only an app window can take input; a region or whole-screen look leaves no view.
+      const windowId = target.app ? firstNumber(d, 'window_id') : undefined;
+      this.view = null;
+      if (windowId != null) {
+        const raw = pngSize(d.screenshot_raw ?? png);
+        this.view = { windowId, title: d.window_title ?? firstString(d, 'window_title') ?? target.app!, scale: viewScale(raw.width, raw.height, maxPx) };
+        head.push(`screen_click, screen_type and screen_press now act on this window (id ${windowId}); x,y are pixels of this image.`);
+      }
+    }
     if (elements && Array.isArray(d.ui_elements)) {
       head.push(`${d.element_count ?? d.ui_elements.length} elements (${d.interactable_count ?? '?'} interactable)${d.ui_map ? `, full map: ${d.ui_map}` : ''}:`);
       for (const e of d.ui_elements.slice(0, 60)) head.push('  ' + summarizeElement(e));
@@ -469,6 +520,16 @@ function findArray(d: unknown, key: string): unknown[] {
   for (const v of Object.values(o)) { if (v && typeof v === 'object' && !Array.isArray(v)) { const r = findArray(v, key); if (r.length) return r; } }
   return [];
 }
+
+/** First value under `key`, anywhere in a Peekaboo result (its shape differs between capture modes). */
+function firstValue(d: unknown, key: string): unknown {
+  if (!d || typeof d !== 'object') return undefined;
+  if (!Array.isArray(d) && key in d) return (d as Record<string, unknown>)[key];
+  for (const v of Object.values(d)) { const r = firstValue(v, key); if (r !== undefined) return r; }
+  return undefined;
+}
+function firstNumber(d: unknown, key: string): number | undefined { const v = firstValue(d, key); return typeof v === 'number' ? v : undefined; }
+function firstString(d: unknown, key: string): string | undefined { const v = firstValue(d, key); return typeof v === 'string' && v ? v : undefined; }
 
 function summarizeElement(e: unknown): string {
   if (!e || typeof e !== 'object') return String(e);
