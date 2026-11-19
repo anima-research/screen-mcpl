@@ -81,49 +81,43 @@ the suggestions to its agent or operator and applies them only on acceptance.
 
 ## Input (optional)
 
-Set `SCREEN_MCPL_INPUT=1` and three more tools are listed. Without it the tool list is unchanged.
+Set `SCREEN_MCPL_INPUT=1` and five more tools are listed. Without it the tool list is unchanged.
 
 | tool | what |
 |---|---|
-| `screen_click` | click at `x`,`y` (pixels of the last `screen_look` image) |
-| `screen_type` | type `text` into whatever has keyboard focus in that window |
-| `screen_press` | press `keys`: `"return"`, `"tab"`, `"pagedown"`, several separated by spaces |
+| `screen_click` | click at `x`,`y`; `button:"right"`, `double:true` |
+| `screen_type` | type `text` into whatever has keyboard focus |
+| `screen_press` | press `keys`: `"return"`, `"tab"`, `"cmd+a"`, `"cmd+shift+g"`, several separated by spaces |
+| `screen_scroll` | wheel-scroll at `x`,`y`; `direction` is the way the agent wants to see |
+| `screen_drag` | press at `x`,`y`, drag to `toX`,`toY`, release |
 
-They act on the app window the agent last captured with `screen_look` (a region or whole-screen
-look selects no window). Everything is delivered through Peekaboo's background route: the pointer
-does not move, the window does not come forward and it may be completely covered by other windows.
+This is real mouse and keyboard input through Peekaboo's foreground route, so it works on any app
+with nothing to prepare, the way a person's hands would. Coordinates are pixels of the agent's last
+`screen_look` image, whatever that look captured:
+
+- a look at an **app window** aims input at that window, which is brought to the front before each
+  action, so a covered window is no obstacle;
+- a look at the **whole screen** or a **region** aims input at whatever is there. Menus, file
+  pickers and other pop-ups are separate windows, so this is how the agent sees and uses them.
+
 Results are text; the agent looks again to see what changed.
 
-What the background route cannot do:
-
-- A click presses the accessibility element under the point. A point with no pressable element
-  (blank page area, a custom-drawn widget, a canvas) fails with an error that says so.
-- App and menu shortcuts (`cmd+r`, `cmd+a`, `cmd+c` …) arrive in a web page as key events, but
-  the app does not act on them. Use the toolbar buttons, and the page keys for scrolling.
-- There is no wheel scrolling in Chrome; `pagedown` / `pageup` / `space` / arrow keys scroll.
-
-Chrome has to be started with a few flags to be driven this way, so give the agent its own instance:
-
-```bash
-open -g -n -a "Google Chrome" --args --user-data-dir=/path/to/agent-profile \
-  --force-renderer-accessibility \
-  --disable-backgrounding-occluded-windows --disable-renderer-backgrounding \
-  --disable-features=MacWebContentsOcclusion
-```
-
-`--force-renderer-accessibility` puts page content into the accessibility tree (without it every
-click on a page fails). The other flags keep a covered window painting; without them clicks still
-land but screenshots of a covered window go stale. With two Chrome instances running, name the
-agent's one by process id: `screen_look {app:"PID:12345"}` (`screen_apps` lists pids). Launching
-the instance brings it to the front once, despite `-g`.
+**The pointer and keyboard focus are shared.** While an agent acts, the pointer moves and its
+window is in front; anything a person types at that moment goes to the agent's window. Two agents,
+or an agent and a person, working on one desktop at the same time will get in each other's way.
+Give an agent its own login session or machine if that matters.
 
 Set `PEEKABOO_BRIDGE_SOCKET` to the daemon socket that holds the permissions (normally
 `~/Library/Application Support/Peekaboo/daemon.sock`). Peekaboo can start a second, ungranted
 daemon on its own; unpinned calls then reach that one and fail with a permission error.
 **Event Synthesizing** must be granted alongside Accessibility.
 
+With two instances of one app running, name the one meant by process id:
+`screen_look {app:"PID:12345"}` (`screen_apps` lists pids).
+
 `screen_look {elements:true}` fails on Chrome windows with Peekaboo 4.9.0 ("inconsistent response
-evidence: window-context window title"); plain looks, which the input tools use, are unaffected.
+evidence: window-context window title"); plain looks, which is all the input tools need, are
+unaffected.
 
 ## Privacy
 

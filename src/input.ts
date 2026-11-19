@@ -1,68 +1,80 @@
 /**
- * Input: click, type and press keys in the window the agent last looked at.
+ * Input: click, type, press keys, scroll and drag in what the agent last looked at.
  *
- * Everything goes through Peekaboo's background delivery, which acts on one
- * exact window without moving the pointer or bringing the window forward. A
- * background click presses the accessibility element under the point, and
- * keystrokes follow that window's own keyboard focus.
+ * This is real mouse and keyboard input, delivered through Peekaboo's foreground
+ * route: the pointer moves, and a looked-at window is brought to the front first.
+ * It therefore works on any app, as a person's hands would, and it shares the one
+ * pointer and keyboard focus with whoever else is using the Mac.
  *
- * Off unless SCREEN_MCPL_INPUT=1, so a watch-only install lists the same
- * tools as before.
+ * Off unless SCREEN_MCPL_INPUT=1, so a watch-only install lists the same tools
+ * as before.
  */
-import { openSync, readSync, closeSync } from 'node:fs';
-
 export const INPUT_ENABLED = process.env.SCREEN_MCPL_INPUT === '1';
 
-/** The window input acts on: set by a screen_look of an app window. */
+/** What input is aimed at: the last screen_look, whatever it captured. */
 export interface View {
-  windowId: number;
-  title: string;
-  /** Window points per pixel of the image the agent was shown (≥ 1). */
+  /** Top-left corner of the captured area, in global display points. */
+  originX: number;
+  originY: number;
+  /** Display points per pixel of the image the agent was shown (≥ 1). */
   scale: number;
+  /** Set when the look captured an app window: it is brought forward before each action. */
+  windowId?: number;
+  label: string;
 }
 
-/** Peekaboo captures at 1x, so the raw PNG's pixels are window points; the agent
- *  sees it downscaled to at most `maxPx` on its longest side. */
-export function viewScale(rawWidth: number, rawHeight: number, maxPx: number): number {
-  return Math.max(1, Math.max(rawWidth, rawHeight) / maxPx);
+/** Peekaboo captures at 1x, so the captured area's size in points is the raw image's
+ *  size in pixels; the agent sees it downscaled to at most `maxPx` on its longest side. */
+export function viewScale(width: number, height: number, maxPx: number): number {
+  return Math.max(1, Math.max(width, height) / maxPx);
 }
 
-/** A point in the shown image → "x,y" in window points, as `--at` wants it. */
-export function windowPoint(view: View, x: number, y: number): string {
-  return `${Math.round(x * view.scale)},${Math.round(y * view.scale)}`;
+/** A point in the shown image → "x,y" in global display points. */
+export function globalPoint(view: View, x: number, y: number): string {
+  return `${Math.round(view.originX + x * view.scale)},${Math.round(view.originY + y * view.scale)}`;
 }
 
-/** Width and height from a PNG's IHDR chunk. */
-export function pngSize(path: string): { width: number; height: number } {
-  const fd = openSync(path, 'r');
-  try {
-    const b = Buffer.alloc(24);
-    readSync(fd, b, 0, 24, 0);
-    return { width: b.readUInt32BE(16), height: b.readUInt32BE(20) };
-  } finally { closeSync(fd); }
+/** The agent says which way it wants to see ("down" = further down the page).
+ *  Peekaboo names the direction the content moves, which is the opposite. */
+export function wheelDirection(direction: string): string | undefined {
+  return ({ down: 'up', up: 'down', right: 'left', left: 'right' } as Record<string, string>)[direction];
 }
 
-/** Peekaboo ends a failed background action with advice to re-run its CLI in the
- *  foreground. These tools have no foreground mode, so the advice would mislead. */
-export function withoutCliAdvice(message: string): string {
-  return message.replace(/\s*Re-run with --foreground[^.]*\./, '').trim();
-}
+const xy = {
+  x: { type: 'number', description: 'Pixels from the left edge of the last screen_look image.' },
+  y: { type: 'number', description: 'Pixels from the top edge of the last screen_look image.' },
+};
 
 export const inputToolDefinitions = [
   { name: 'screen_click',
-    description: 'Click in the app window you last captured with screen_look. x and y are pixels in that image. The click goes to the window in the background: the pointer does not move and the window does not come forward. It presses the control under the point (a button, link, field, tab or menu item); a point with no control under it fails and says so. The result is text only, so look again to see what changed.',
+    description: 'Click with the real mouse at x,y in your last screen_look image. Works on any app. If that look was of an app window, the window is brought to the front first; if it was of the whole screen or a region, the click lands on whatever is there. The pointer moves, so this takes the pointer and keyboard focus from anyone else using the Mac. Menus, file pickers and other pop-ups are separate windows: look at the screen to see and click them. The result is text only, so look again to see what changed.',
     inputSchema: { type: 'object' as const, properties: {
-      x: { type: 'number', description: 'Pixels from the left edge of the image.' },
-      y: { type: 'number', description: 'Pixels from the top edge of the image.' },
+      ...xy,
+      button: { type: 'string', enum: ['left', 'right'], description: 'Default left.' },
+      double: { type: 'boolean', description: 'Double-click.' },
     }, required: ['x', 'y'] } },
   { name: 'screen_type',
-    description: 'Type text into whatever has keyboard focus in the app window you last captured with screen_look. Click a field first to focus it. Delivered in the background, like screen_click. Look again to confirm what arrived.',
+    description: 'Type text on the real keyboard, into whatever has keyboard focus. Click a field first to focus it. If your last screen_look was of an app window, that window is brought to the front first.',
     inputSchema: { type: 'object' as const, properties: {
       text: { type: 'string', description: 'The text to type.' },
     }, required: ['text'] } },
   { name: 'screen_press',
-    description: 'Press keys in the app window you last captured with screen_look: "return", "tab", "shift+tab", "escape", "delete", "pagedown", "pageup", "space", "up", "down". Several keys separated by spaces are pressed in order. Keys go to whatever has keyboard focus in that window, in the background; in a browser, pagedown and pageup scroll the page. App shortcuts such as cmd+r, cmd+a or cmd+c reach the page as key events, but the app does not act on them while it is in the background.',
+    description: 'Press keys on the real keyboard: "return", "tab", "escape", "delete", "space", "up", "down", "pagedown", and shortcuts such as "cmd+a", "cmd+c", "cmd+v", "cmd+w", "cmd+shift+g". Several separated by spaces are pressed in order. They go to whatever has keyboard focus; if your last screen_look was of an app window, that window is brought to the front first.',
     inputSchema: { type: 'object' as const, properties: {
-      keys: { type: 'string', description: 'One key or chord, or several separated by spaces.' },
+      keys: { type: 'string', description: 'One key or shortcut, or several separated by spaces.' },
     }, required: ['keys'] } },
+  { name: 'screen_scroll',
+    description: 'Scroll with the mouse wheel at x,y in your last screen_look image. direction is the way you want to see: "down" shows what is further down.',
+    inputSchema: { type: 'object' as const, properties: {
+      ...xy,
+      direction: { type: 'string', enum: ['down', 'up', 'left', 'right'] },
+      amount: { type: 'number', description: 'Wheel ticks (default 5).' },
+    }, required: ['x', 'y', 'direction'] } },
+  { name: 'screen_drag',
+    description: 'Press the mouse button at x,y, drag to toX,toY and release, all in your last screen_look image. For sliders, scrollbars, moving things and selecting text.',
+    inputSchema: { type: 'object' as const, properties: {
+      ...xy,
+      toX: { type: 'number', description: 'Where to release: pixels from the left edge.' },
+      toY: { type: 'number', description: 'Where to release: pixels from the top edge.' },
+    }, required: ['x', 'y', 'toX', 'toY'] } },
 ];

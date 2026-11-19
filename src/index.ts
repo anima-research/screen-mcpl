@@ -24,7 +24,7 @@ import type {
 } from './mcpl05.js';
 import { daemonStatus, describeTarget, ensureDaemon, errorText, pb, permissions, targetArgs, type Target } from './peekaboo.js';
 import { base64Of, renderFrame } from './image.js';
-import { INPUT_ENABLED, inputToolDefinitions, pngSize, viewScale, windowPoint, withoutCliAdvice, type View } from './input.js';
+import { INPUT_ENABLED, globalPoint, inputToolDefinitions, viewScale, wheelDirection, type View } from './input.js';
 import { WatchManager, type Burst, type ImageMode, type WatchRuntime, type WatchSpec, type WatchState } from './watch.js';
 
 const HOME = process.env.SCREEN_MCPL_HOME ?? join(homedir(), '.screen-mcpl');
@@ -156,7 +156,7 @@ class ScreenServer {
   private grant: Grant = EMPTY_GRANT;
   private policyReady = false;
   private readonly watches: WatchManager;
-  /** The window the input tools act on: the last app window screen_look captured. */
+  /** What the input tools act on: the last screen_look. */
   private view: View | null = null;
 
   constructor() {
@@ -333,42 +333,51 @@ class ScreenServer {
       case 'screen_apps': return this.toolApps(args);
     }
     if (INPUT_ENABLED) {
+      const point = (x: unknown, y: unknown) => typeof x === 'number' && typeof y === 'number';
       switch (name) {
         case 'screen_click':
-          if (typeof args.x !== 'number' || typeof args.y !== 'number') return this.text('x and y are required (pixels in the last screen_look image)', true);
-          return this.act(v => ['click', '--at', windowPoint(v, args.x as number, args.y as number)], v => `Clicked at ${args.x},${args.y} in "${v.title}".`);
+          if (!point(args.x, args.y)) return this.text('x and y are required (pixels in the last screen_look image)', true);
+          return this.act(v => [['click', '--at', globalPoint(v, args.x as number, args.y as number), '--global', ...(args.button === 'right' ? ['--right'] : []), ...(args.double === true ? ['--double'] : [])]],
+            v => `${args.double === true ? 'Double-clicked' : args.button === 'right' ? 'Right-clicked' : 'Clicked'} at ${args.x},${args.y} in ${v.label}.`);
         case 'screen_type':
           if (typeof args.text !== 'string' || !args.text) return this.text('text is required', true);
           // "--text=" form: text that starts with a dash would otherwise be read as a flag.
-          return this.act(() => ['type', `--text=${args.text as string}`, '--accept-dispatched'], v => `Typed ${(args.text as string).length} characters into "${v.title}".`);
+          // Peekaboo cannot confirm what an app did with real keystrokes, so accept "sent".
+          return this.act(() => [['type', `--text=${args.text as string}`, '--accept-dispatched']], () => `Typed ${(args.text as string).length} characters.`);
         case 'screen_press': {
           const keys = (str(args.keys) ?? '').split(/\s+/).filter(Boolean);
-          if (keys.length === 0) return this.text('keys is required, e.g. "return" or "tab tab"', true);
-          // One key per snapshot: a page that reacts to the first key makes the snapshot stale for the next.
-          let last = this.text('');
-          for (const [i, key] of keys.entries()) {
-            last = await this.act(() => ['press', key], v => `Pressed ${keys.join(' ')} in "${v.title}".`);
-            if (last.isError && i > 0) return this.text(`Pressed ${keys.slice(0, i).join(' ')}, then ${key} failed: ${(last.content[0] as { text: string }).text}`, true);
-            if (last.isError) return last;
-          }
-          return last;
+          if (keys.length === 0) return this.text('keys is required, e.g. "return" or "cmd+a"', true);
+          return this.act(() => keys.map(k => ['press', k]), () => `Pressed ${keys.join(' ')}.`);
         }
+        case 'screen_scroll': {
+          const wheel = wheelDirection(String(args.direction));
+          if (!point(args.x, args.y) || !wheel) return this.text('x, y and direction (down, up, left or right) are required', true);
+          // The wheel acts where the pointer is, so put it there first.
+          return this.act(v => [['move', '--at', globalPoint(v, args.x as number, args.y as number), '--global'], ['scroll', '--direction', wheel, '--amount', String(num(args.amount, 5, 1))]],
+            v => `Scrolled ${args.direction} at ${args.x},${args.y} in ${v.label}.`);
+        }
+        case 'screen_drag':
+          if (!point(args.x, args.y) || !point(args.toX, args.toY)) return this.text('x, y, toX and toY are required (pixels in the last screen_look image)', true);
+          return this.act(v => [['drag', '--from', globalPoint(v, args.x as number, args.y as number), '--to', globalPoint(v, args.toX as number, args.toY as number)]],
+            v => `Dragged from ${args.x},${args.y} to ${args.toX},${args.toY} in ${v.label}.`);
       }
     }
     return this.text(`Unknown tool: ${name}`, true);
   }
 
-  /** Run one background input command against the viewed window. Peekaboo wants a
-   *  fresh snapshot of the exact window for each one, so take it here. */
-  private async act(command: (v: View) => string[], done: (v: View) => string): Promise<ToolResult> {
+  /** Run real-input commands, in order, against the last look. A looked-at window is
+   *  brought to the front first, so the input lands on it and not on whatever covers it. */
+  private async act(commands: (v: View) => string[][], done: (v: View) => string): Promise<ToolResult> {
     const v = this.view;
-    if (!v) return this.text('No window to act on yet. Capture an app window first: screen_look {app:"…"} (screen_apps lists apps and their windows).', true);
-    const dir = join(CAPTURES, '_look');
-    mkdirSync(dir, { recursive: true });
-    const snap = await pb<{ snapshot_id?: string }>(['see', '--window-id', String(v.windowId), '--no-elements', '--path', join(dir, 'act.png')]);
-    if (!snap.success || !snap.data?.snapshot_id) return this.text(`Could not reach the window "${v.title}" (id ${v.windowId}): ${errorText(snap)}. Look at it again with screen_look.`, true);
-    const r = await pb([...command(v), '--snapshot', snap.data.snapshot_id, '--window-id', String(v.windowId)]);
-    if (!r.success) return this.text(withoutCliAdvice(r.error?.message ?? errorText(r)), true);
+    if (!v) return this.text('Nothing to act on yet. Look first: screen_look {app:"…"} for a window, or screen_look {} for the whole screen.', true);
+    if (v.windowId != null) {
+      const f = await pb(['window', 'focus', '--window-id', String(v.windowId)]);
+      if (!f.success) return this.text(`Could not bring ${v.label} to the front: ${f.error?.message ?? errorText(f)}. Look again with screen_look.`, true);
+    }
+    for (const command of commands(v)) {
+      const r = await pb([...command, '--foreground']);
+      if (!r.success) return this.text(`${command[0]} failed: ${r.error?.message ?? errorText(r)}`, true);
+    }
     return this.text(done(v));
   }
 
@@ -467,13 +476,16 @@ class ScreenServer {
     const head = [`${describeTarget(target)}${d.application_name ? ` — ${d.application_name}` : ''}${d.window_title ? `: "${d.window_title}"` : ''} at ${fmtTime(Date.now())}.`];
     head.push(`Image: ${jpg ?? d.screenshot_raw ?? png}`);
     if (INPUT_ENABLED) {
-      // Only an app window can take input; a region or whole-screen look leaves no view.
-      const windowId = target.app ? firstNumber(d, 'window_id') : undefined;
+      // Input is aimed through this look: where the captured area sits on the display, and
+      // how far the shown image was scaled down from it.
+      const bounds = firstValue(d, 'logical_bounds') as [[number, number], [number, number]] | undefined;
       this.view = null;
-      if (windowId != null) {
-        const raw = pngSize(d.screenshot_raw ?? png);
-        this.view = { windowId, title: d.window_title ?? firstString(d, 'window_title') ?? target.app!, scale: viewScale(raw.width, raw.height, maxPx) };
-        head.push(`screen_click, screen_type and screen_press now act on this window (id ${windowId}); x,y are pixels of this image.`);
+      if (bounds) {
+        const [[originX, originY], [width, height]] = bounds;
+        const windowId = target.app ? firstNumber(d, 'window_id') : undefined;
+        const title = d.window_title ?? firstString(d, 'window_title');
+        this.view = { originX, originY, scale: viewScale(width, height, maxPx), windowId, label: windowId != null && title ? `"${title}"` : describeTarget(target) };
+        head.push(`screen_click, screen_type, screen_press, screen_scroll and screen_drag now act on this image; x,y are its pixels.`);
       }
     }
     if (elements && Array.isArray(d.ui_elements)) {
