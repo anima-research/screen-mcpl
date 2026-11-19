@@ -24,7 +24,7 @@ import type {
 } from './mcpl05.js';
 import { daemonStatus, describeTarget, ensureDaemon, errorText, pb, permissions, targetArgs, type Target } from './peekaboo.js';
 import { base64Of, renderFrame } from './image.js';
-import { INPUT_ENABLED, globalPoint, inputToolDefinitions, viewScale, wheelDirection, type View } from './input.js';
+import { INPUT_ENABLED, globalPoint, inputToolDefinitions, viewScale, wheelDirection, windowPoint, withoutCliAdvice, type View } from './input.js';
 import { WatchManager, type Burst, type ImageMode, type WatchRuntime, type WatchSpec, type WatchState } from './watch.js';
 
 const HOME = process.env.SCREEN_MCPL_HOME ?? join(homedir(), '.screen-mcpl');
@@ -334,20 +334,25 @@ class ScreenServer {
     }
     if (INPUT_ENABLED) {
       const point = (x: unknown, y: unknown) => typeof x === 'number' && typeof y === 'number';
+      const quiet = args.quiet === true;
       switch (name) {
         case 'screen_click':
           if (!point(args.x, args.y)) return this.text('x and y are required (pixels in the last screen_look image)', true);
+          if (quiet) {
+            if (args.button === 'right' || args.double === true) return this.text('A quiet click is a single left click. Leave quiet out for a right or double click.', true);
+            return this.actQuiet(v => [['click', '--at', windowPoint(v, args.x as number, args.y as number)]], v => `Clicked at ${args.x},${args.y} in ${v.label}, quietly.`);
+          }
           return this.act(v => [['click', '--at', globalPoint(v, args.x as number, args.y as number), '--global', ...(args.button === 'right' ? ['--right'] : []), ...(args.double === true ? ['--double'] : [])]],
             v => `${args.double === true ? 'Double-clicked' : args.button === 'right' ? 'Right-clicked' : 'Clicked'} at ${args.x},${args.y} in ${v.label}.`);
         case 'screen_type':
           if (typeof args.text !== 'string' || !args.text) return this.text('text is required', true);
           // "--text=" form: text that starts with a dash would otherwise be read as a flag.
           // Peekaboo cannot confirm what an app did with real keystrokes, so accept "sent".
-          return this.act(() => [['type', `--text=${args.text as string}`, '--accept-dispatched']], () => `Typed ${(args.text as string).length} characters.`);
+          return (quiet ? this.actQuiet : this.act).call(this, () => [['type', `--text=${args.text as string}`, '--accept-dispatched']], () => `Typed ${(args.text as string).length} characters${quiet ? ', quietly' : ''}.`);
         case 'screen_press': {
           const keys = (str(args.keys) ?? '').split(/\s+/).filter(Boolean);
           if (keys.length === 0) return this.text('keys is required, e.g. "return" or "cmd+a"', true);
-          return this.act(() => keys.map(k => ['press', k]), () => `Pressed ${keys.join(' ')}.`);
+          return (quiet ? this.actQuiet : this.act).call(this, () => keys.map(k => ['press', k]), () => `Pressed ${keys.join(' ')}${quiet ? ', quietly' : ''}.`);
         }
         case 'screen_scroll': {
           const wheel = wheelDirection(String(args.direction));
@@ -377,6 +382,29 @@ class ScreenServer {
     for (const command of commands(v)) {
       const r = await pb([...command, '--foreground']);
       if (!r.success) return this.text(`${command[0]} failed: ${r.error?.message ?? errorText(r)}`, true);
+    }
+    return this.text(done(v));
+  }
+
+  /** The quiet route: Peekaboo's background delivery to the looked-at window. Nothing moves
+   *  and nothing comes forward, but only standard controls accept it. Each command needs a
+   *  fresh snapshot of the exact window, and a page that reacts to one key makes the snapshot
+   *  stale for the next. A failure is reported, never retried with real input: an attempt that
+   *  half-landed followed by a real one could click or type twice. */
+  private async actQuiet(commands: (v: View) => string[][], done: (v: View) => string): Promise<ToolResult> {
+    const v = this.view;
+    if (!v || v.windowId == null) return this.text('Quiet input needs a look at an app window first: screen_look {app:"…"}. After a look at the screen or a region, leave quiet out.', true);
+    const list = commands(v);
+    for (const [i, command] of list.entries()) {
+      const snap = await pb<{ snapshot_id?: string }>(['see', '--window-id', String(v.windowId), '--no-elements', '--path', join(CAPTURES, '_look', 'quiet.png')]);
+      if (!snap.success || !snap.data?.snapshot_id) return this.text(`Could not reach ${v.label}: ${errorText(snap)}. Look again with screen_look.`, true);
+      const r = await pb([...command, '--snapshot', snap.data.snapshot_id, '--window-id', String(v.windowId)]);
+      if (!r.success) {
+        // Peekaboo's own flags do not separate "nothing happened" from "may have partly landed",
+        // so never tell the agent a repeat is safe: have it look first.
+        const sofar = i > 0 ? `${i} of ${list.length} went through, then the ` : 'The ';
+        return this.text(`${sofar}quiet route failed: ${withoutCliAdvice(r.error?.message ?? errorText(r))} Look to see whether anything changed; if not, repeat without quiet to use the real ${command[0] === 'click' ? 'mouse' : 'keyboard'}.`, true);
+      }
     }
     return this.text(done(v));
   }

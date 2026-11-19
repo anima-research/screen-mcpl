@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { globalPoint, viewScale, wheelDirection, type View } from '../src/input.js';
+import { globalPoint, viewScale, wheelDirection, windowPoint, withoutCliAdvice, type View } from '../src/input.js';
 
 test('a window shown at full size maps image pixels to its place on the display', () => {
   const view: View = { originX: 900, originY: 80, scale: viewScale(900, 760, 1280), label: 'w' };
@@ -26,4 +26,18 @@ test('scroll direction is the way the agent wants to see, the opposite of the co
   assert.equal(wheelDirection('up'), 'down');
   assert.equal(wheelDirection('left'), 'right');
   assert.equal(wheelDirection('sideways'), undefined);
+});
+
+test('the quiet route gets points relative to the window, not the display', () => {
+  const view: View = { originX: 900, originY: 80, scale: 1.5, windowId: 7, label: 'w' };
+  assert.equal(windowPoint(view, 100, 40), '150,60');
+  assert.equal(globalPoint(view, 100, 40), '1050,140');
+});
+
+test('a quiet refusal keeps what Peekaboo found and drops its CLI advice', () => {
+  const click = 'No pressable accessibility element was found at (125, 323) in PID 1. Background clicks press the accessibility element at the target point — the point may be empty. Re-run with --foreground --input-strategy synthOnly to focus the app.';
+  assert.ok(withoutCliAdvice(click).endsWith('the point may be empty.'));
+  const keys = 'Invalid target: the window does not hold keyboard focus. To write into this window without focusing it, observe it and set its value (`set-value` command).';
+  assert.equal(withoutCliAdvice(keys), 'Invalid target: the window does not hold keyboard focus.');
+  assert.equal(withoutCliAdvice('Typing failed.'), 'Typing failed.');
 });
