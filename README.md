@@ -79,6 +79,65 @@ them in an RFC-001 `tagOntology` that suggests waking immediately on both kinds 
 watch already merges each burst, and is paced per watch with `screen_watch_set`. A host offers
 the suggestions to its agent or operator and applies them only on acceptance.
 
+## Input (optional)
+
+Set `SCREEN_MCPL_INPUT=1` and five more tools are listed. Without it the tool list is unchanged.
+
+| tool | what |
+|---|---|
+| `screen_click` | click at `x`,`y`; `button:"right"`, `double:true` |
+| `screen_type` | type `text` into whatever has keyboard focus |
+| `screen_press` | press `keys`: `"return"`, `"tab"`, `"cmd+a"`, `"cmd+shift+g"`, several separated by spaces |
+| `screen_scroll` | wheel-scroll at `x`,`y`; `direction` is the way the agent wants to see |
+| `screen_drag` | press at `x`,`y`, drag to `toX`,`toY`, release |
+
+This is real mouse and keyboard input through Peekaboo's foreground route, so it works on any app
+with nothing to prepare, the way a person's hands would. Coordinates are pixels of the agent's last
+`screen_look` image, whatever that look captured:
+
+- a look at an **app window** aims input at that window, which is brought to the front before each
+  action, so a covered window is no obstacle;
+- a look at the **whole screen** or a **region** aims input at whatever is there. Menus, file
+  pickers and other pop-ups are separate windows, so this is how the agent sees and uses them.
+
+Results are text; the agent looks again to see what changed.
+
+### `quiet: true`
+
+`screen_click`, `screen_type` and `screen_press` take `quiet: true`, which uses Peekaboo's
+background route instead: the pointer does not move, the window does not come forward and it may be
+covered. Nobody using the Mac is interrupted. It needs a look at an app window, and it only does
+part of the job:
+
+- a click presses the accessibility element under the point, so only standard controls accept it
+  (buttons, links, fields, toolbar buttons). Blank or custom-drawn areas refuse it, and so does
+  page content in Chrome unless Chrome was started with `--force-renderer-accessibility`;
+- typed text and keys go to whatever has keyboard focus inside that window, and fail if nothing
+  there holds focus;
+- shortcuts with `cmd` reach a page as key events, but the app does not act on them;
+- single left clicks only; no scroll, no drag.
+
+A quiet action that fails says why and is never retried with real input by the server: an attempt
+that half-landed followed by a real one could click or type twice. The agent looks, then repeats
+without `quiet`.
+
+**The pointer and keyboard focus are shared.** While an agent acts, the pointer moves and its
+window is in front; anything a person types at that moment goes to the agent's window. Two agents,
+or an agent and a person, working on one desktop at the same time will get in each other's way.
+Give an agent its own login session or machine if that matters.
+
+Set `PEEKABOO_BRIDGE_SOCKET` to the daemon socket that holds the permissions (normally
+`~/Library/Application Support/Peekaboo/daemon.sock`). Peekaboo can start a second, ungranted
+daemon on its own; unpinned calls then reach that one and fail with a permission error.
+**Event Synthesizing** must be granted alongside Accessibility.
+
+With two instances of one app running, name the one meant by process id:
+`screen_look {app:"PID:12345"}` (`screen_apps` lists pids).
+
+`screen_look {elements:true}` fails on Chrome windows with Peekaboo 4.9.0 ("inconsistent response
+evidence: window-context window title"); plain looks, which is all the input tools need, are
+unaffected.
+
 ## Privacy
 
 This streams screen content to whoever the host is. Prefer app/window/region scope over whole
